@@ -1,0 +1,53 @@
+﻿version: '3.8'
+
+services:
+  nginx:
+    image: nginx:alpine
+    container_name: web_nginx
+    restart: always
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/html:/usr/share/nginx/html:ro
+    depends_on:
+      - backend
+    networks:
+      - micro-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: app_backend
+    restart: always
+    environment:
+      - DB_HOST=db
+      - DB_NAME=app_db
+      - DB_USER=postgres
+      - DB_PASS=postgres123
+      - DB_PORT=5432
+    depends_on:
+      - db
+    networks:
+      - micro-network
+
+  db:
+    image: postgres:15-alpine
+    container_name: db_postgres
+    restart: always
+    environment:
+      POSTGRES_DB: app_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - micro-network
+
+networks:
+  micro-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
