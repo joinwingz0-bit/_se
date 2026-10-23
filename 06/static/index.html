@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>待辦任務管理系統</title>
+    <style>
+        body { font-family: sans-serif; max-width: 500px; margin: 40px auto; padding: 0 16px; }
+        .input-group { display: flex; gap: 8px; margin-bottom: 16px; }
+        input { flex: 1; padding: 8px; }
+        button { padding: 8px 16px; cursor: pointer; }
+        ul { list-style: none; padding: 0; }
+        li { display: flex; justify-content: space-between; padding: 8px; border-bottom: 1px solid #ddd; }
+        .error { color: red; font-size: 0.9em; min-height: 1.2em; margin-bottom: 8px; }
+    </style>
+</head>
+<body>
+    <h2>任務清單</h2>
+    <div class="input-group">
+        <input id="task-input" data-testid="task-input" type="text" placeholder="輸入任務名稱...">
+        <button id="add-btn" data-testid="add-button" onclick="addTask()">新增</button>
+    </div>
+    <div id="error-msg" data-testid="error-message" class="error"></div>
+    <ul id="task-list" data-testid="task-list"></ul>
+
+    <script>
+        async function fetchTasks() {
+            const res = await fetch('/api/tasks');
+            const tasks = await res.json();
+            const list = document.getElementById('task-list');
+            list.innerHTML = '';
+            tasks.forEach(t => {
+                const li = document.createElement('li');
+                li.setAttribute('data-testid', 'task-item');
+                li.innerHTML = `
+                    <span data-testid="task-title">${t.title}</span>
+                    <button data-testid="delete-button" onclick="deleteTask(${t.id})">刪除</button>
+                `;
+                list.appendChild(li);
+            });
+        }
+
+        async function addTask() {
+            const input = document.getElementById('task-input');
+            const errorDiv = document.getElementById('error-msg');
+            errorDiv.textContent = '';
+
+            const res = await fetch('/api/tasks', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title: input.value })
+            });
+
+            if (res.ok) {
+                input.value = '';
+                fetchTasks();
+            } else {
+                const errText = await res.text();
+                errorDiv.textContent = errText || '新增失敗';
+            }
+        }
+
+        async function deleteTask(id) {
+            await fetch(`/api/tasks/${id}`, { method: 'DELETE' });
+            fetchTasks();
+        }
+
+        fetchTasks();
+    </script>
+</body>
+</html>
