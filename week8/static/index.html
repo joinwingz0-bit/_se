@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-Hant" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SysPulse & NetGuard | 硬體遙測與網路連線審計終端</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    body { background-color: #090d16; color: #e2e8f0; font-family: 'Inter', system-ui, sans-serif; }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+  </style>
+</head>
+<body class="h-screen flex flex-col overflow-hidden select-none">
+
+  <!-- 頂部導覽與即時總覽列 -->
+  <header class="h-14 bg-[#0f172a] border-b border-slate-800 px-4 flex items-center justify-between shrink-0">
+    <div class="flex items-center space-x-3">
+      <span id="conn-dot" class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse"></span>
+      <h1 class="font-bold text-lg tracking-wider text-white">SYSPULSE <span class="text-indigo-400 font-mono text-sm">& NETGUARD</span></h1>
+      <span id="cpu-freq-badge" class="px-2 py-0.5 text-xs font-mono bg-slate-800 text-indigo-300 rounded border border-slate-700">-- MHz</span>
+    </div>
+
+    <!-- 關鍵硬體指標快速看板 -->
+    <div class="flex items-center space-x-6 text-xs font-mono">
+      <div>CPU 總負載: <span id="hdr-cpu" class="font-bold text-sm text-emerald-400">--%</span></div>
+      <div>RAM 使用率: <span id="hdr-mem" class="font-bold text-sm text-cyan-400">--%</span></div>
+      <div>網路速率: <span id="hdr-net" class="font-bold text-amber-400">↑ 0 / ↓ 0 KB/s</span></div>
+      <div>磁碟 I/O: <span id="hdr-disk" class="font-bold text-purple-400">R 0 / W 0 MB/s</span></div>
+    </div>
+
+    <!-- 異常抓包門檻設定 -->
+    <div class="flex items-center space-x-2 text-xs font-mono">
+      <span class="text-slate-400">自動抓包門檻 CPU% / RAM%:</span>
+      <input id="inp-cpu-th" type="number" value="80" class="w-14 bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-center text-white" />
+      <input id="inp-mem-th" type="number" value="85" class="w-14 bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-center text-white" />
+      <button onclick="saveThresholds()" class="bg-indigo-600 hover:bg-indigo-500 text-white px-2.5 py-1 rounded transition">更新</button>
+    </div>
+  </header>
+
+  <!-- 通知橫幅 -->
+  <div id="toast" class="hidden fixed top-16 right-4 z-50 px-4 py-2 rounded bg-slate-800 border border-indigo-500 text-xs font-mono text-white shadow-lg"></div>
+
+  <!-- 主體儀表板 -->
+  <main class="flex-1 grid grid-cols-12 gap-3 p-3 overflow-hidden">
+
+    <!-- 左欄 (5 欄)：多核心狀態 + 即時趨勢圖 + SQLite 異常元兇紀錄 -->
+    <section class="col-span-5 flex flex-col gap-3 h-full overflow-hidden">
+      <!-- 各核心負載矩陣 -->
+      <div class="bg-[#0f172a] border border-slate-800 rounded-lg p-3 shrink-0">
+        <div class="flex justify-between items-center mb-2">
+          <span class="text-xs font-bold uppercase tracking-wider text-slate-400">CPU 邏輯核心負載分佈 (Per-Core Load)</span>
+          <span id="core-count-label" class="text-[11px] font-mono text-slate-500">-- Cores</span>
+        </div>
+        <div id="cores-grid" class="grid grid-cols-4 gap-2"></div>
+      </div>
+
+      <!-- CPU / RAM 與 網路流量即時雙圖表 -->
+      <div class="bg-[#0f172a] border border-slate-800 rounded-lg p-3 flex-1 flex flex-col min-h-0">
+        <span class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">CPU & 記憶體即時曲線 (60s)</span>
+        <div class="flex-1 relative min-h-0">
+          <canvas id="sysChart"></canvas>
+        </div>
+      </div>
+
+      <!-- SQLite 異常峰值元兇紀錄牆 -->
+      <div class="bg-[#0f172a] border border-slate-800 rounded-lg flex flex-col h-48 shrink-0 overflow-hidden">
+        <div class="px-3 py-2 bg-slate-900/80 border-b border-slate-800 flex justify-between items-center">
+          <span class="text-xs font-bold text-rose-400">🚨 系統超載元兇自動抓包紀錄 (SQLite 持久化)</span>
+          <span id="anomaly-count" class="text-[11px] font-mono text-slate-400">0 筆紀錄</span>
+        </div>
+        <div id="anomaly-list" class="flex-1 overflow-y-auto divide-y divide-slate-800/60 font-mono text-xs"></div>
+      </div>
+    </section>
+
+    <!-- 右欄 (7 欄)：程序管控中心 & 即時網路連線審計表 -->
+    <section class="col-span-7 flex flex-col gap-3 h-full overflow-hidden">
+
+      <!-- 上半部：Top 高耗能程序管控表 -->
+      <div class="flex-1 bg-[#0f172a] border border-slate-800 rounded-lg flex flex-col overflow-hidden">
+        <div class="px-3 py-2 bg-slate-900/80 border-b border-slate-800 flex justify-between items-center">
+          <span class="text-xs font-bold text-emerald-400">⚡ 即時高耗能程序排行與管控 (Top Processes)</span>
+          <input id="proc-filter" type="text" placeholder="搜尋程序名稱或 PID..."
+                 class="bg-slate-950 border border-slate-700 rounded px-2 py-0.5 text-xs font-mono text-white focus:outline-none focus:border-indigo-500" />
+        </div>
+        <div class="grid grid-cols-12 px-3 py-1.5 text-[11px] font-mono text-slate-400 border-b border-slate-800">
+          <span class="col-span-2">PID</span>
+          <span class="col-span-4">程序名稱</span>
+          <span class="col-span-2 text-right">CPU %</span>
+          <span class="col-span-2 text-right">記憶體 (MB)</span>
+          <span class="col-span-2 text-right">操作</span>
+        </div>
+        <div id="proc-table" class="flex-1 overflow-y-auto divide-y divide-slate-800/40 font-mono text-xs"></div>
+      </div>
+
+      <!-- 下半部：活躍網路 TCP Socket 連線反查表 -->
+      <div class="flex-1 bg-[#0f172a] border border-slate-800 rounded-lg flex flex-col overflow-hidden">
+        <div class="px-3 py-2 bg-slate-900/80 border-b border-slate-800 flex justify-between items-center">
+          <span class="text-xs font-bold text-cyan-400">🌐 即時活躍網路連線審計 (Active TCP Sockets -> Process)</span>
+          <span id="conn-count" class="text-[11px] font-mono text-slate-400">0 條連線</span>
+        </div>
+        <div class="grid grid-cols-12 px-3 py-1.5 text-[11px] font-mono text-slate-400 border-b border-slate-800">
+          <span class="col-span-3">對應程式 (PID)</span>
+          <span class="col-span-4">本機位址 (Local)</span>
+          <span class="col-span-3">遠端目標 (Remote IP)</span>
+          <span class="col-span-2 text-right">狀態</span>
+        </div>
+        <div id="conn-table" class="flex-1 overflow-y-auto divide-y divide-slate-800/40 font-mono text-xs"></div>
+      </div>
+
+    </section>
+  </main>
+
+  <script>
+    // 1. 初始化 Chart.js 即時曲線圖
+    const ctx = document.getElementById('sysChart').getContext('2d');
+    const maxPoints = 60;
+    const labels = Array(maxPoints).fill('');
+    const cpuData = Array(maxPoints).fill(0);
+    const memData = Array(maxPoints).fill(0);
+
+    const sysChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [
+          { label: 'CPU %', data: cpuData, borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', borderWidth: 2, fill: true, tension: 0.3, pointRadius: 0 },
+          { label: 'RAM %', data: memData, borderColor: '#06b6d4', backgroundColor: 'rgba(6,182,212,0.08)', borderWidth: 2, fill: true, tension: 0.3, pointRadius: 0 }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        scales: {
+          y: { min: 0, max: 100, grid: { color: '#1e293b' }, ticks: { color: '#64748b', font: { size: 10 } } },
+          x: { display: false }
+        },
+        plugins: { legend: { labels: { color: '#cbd5e1', font: { size: 11 } } } }
+      }
+    });
+
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.remove('hidden');
+      setTimeout(() => t.classList.add('hidden'), 3500);
+    }
+
+    // 2. 渲染各核心負載條
+    function renderCores(perCore) {
+      document.getElementById('core-count-label').textContent = `${perCore.length} 邏輯核心`;
+      const grid = document.getElementById('cores-grid');
+      if (grid.children.length !== perCore.length) {
+        grid.innerHTML = perCore.map((_, idx) => `
+          <div class="bg-slate-900 px-2 py-1 rounded border border-slate-800">
+            <div class="flex justify-between text-[10px] font-mono mb-1">
+              <span class="text-slate-400">C${idx}</span>
+              <span id="core-val-${idx}" class="text-white font-bold">0%</span>
+            </div>
+            <div class="w-full h-1.5 bg-slate-800 rounded overflow-hidden">
+              <div id="core-bar-${idx}" class="h-full bg-indigo-500 transition-all duration-300" style="width:0%"></div>
+            </div>
+          </div>
+        `).join('');
+      }
+      perCore.forEach((val, idx) => {
+        const valEl = document.getElementById(`core-val-${idx}`);
+        const barEl = document.getElementById(`core-bar-${idx}`);
+        if (valEl && barEl) {
+          valEl.textContent = `${val}%`;
+          barEl.style.width = `${val}%`;
+          barEl.className = `h-full transition-all duration-300 ${val > 80 ? 'bg-rose-500' : val > 50 ? 'bg-amber-400' : 'bg-emerald-500'}`;
+        }
+      });
+    }
+
+    // 3. 渲染程序列表與一鍵終止
+    let latestProcesses = [];
+    function renderProcesses() {
+      const keyword = document.getElementById('proc-filter').value.toLowerCase();
+      const container = document.getElementById('proc-table');
+      const filtered = latestProcesses.filter(p =>
+        p.name.toLowerCase().includes(keyword) || String(p.pid).includes(keyword)
+      );
+
+      container.innerHTML = filtered.map(p => `
+        <div class="grid grid-cols-12 px-3 py-1.5 items-center hover:bg-slate-800/40">
+          <span class="col-span-2 text-slate-400">${p.pid}</span>
+          <span class="col-span-4 font-semibold text-white truncate pr-2" title="${p.name}">${p.name}</span>
+          <span class="col-span-2 text-right font-bold ${p.cpu_percent > 30 ? 'text-rose-400' : 'text-emerald-400'}">${p.cpu_percent}%</span>
+          <span class="col-span-2 text-right text-cyan-300">${p.memory_mb} MB</span>
+          <div class="col-span-2 text-right">
+            <button onclick="killPid(${p.pid}, '${p.name.replace(/'/g, "\\'")}')"
+                    class="px-2 py-0.5 bg-rose-500/20 hover:bg-rose-500 text-rose-300 hover:text-white rounded text-[10px] transition">
+              終止
+            </button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    document.getElementById('proc-filter').addEventListener('input', renderProcesses);
+
+    async function killPid(pid, name) {
+      if (!confirm(`確定要強制終止程序「${name} (PID: ${pid})」嗎？`)) return;
+      const res = await fetch(`/api/kill/${pid}`, { method: 'POST' });
+      const data = await res.json();
+      showToast(data.message);
+    }
+
+    // 4. 渲染活躍網路連線
+    function renderConnections(conns) {
+      document.getElementById('conn-count').textContent = `${conns.length} 條活躍連線`;
+      const container = document.getElementById('conn-table');
+      container.innerHTML = conns.map(c => {
+        const isEst = c.status === 'ESTABLISHED';
+        return `
+          <div class="grid grid-cols-12 px-3 py-1.5 items-center hover:bg-slate-800/40">
+            <span class="col-span-3 font-semibold text-white truncate pr-2" title="${c.name} (${c.pid})">
+              ${c.name} <span class="text-slate-500 text-[10px]">#${c.pid}</span>
+            </span>
+            <span class="col-span-4 text-slate-300 truncate">${c.local}</span>
+            <span class="col-span-3 ${isEst ? 'text-amber-300 font-semibold' : 'text-slate-500'} truncate">${c.remote}</span>
+            <span class="col-span-2 text-right">
+              <span class="px-1.5 py-0.5 rounded text-[10px] ${isEst ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-400'}">
+                ${c.status}
+              </span>
+            </span>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // 5. 渲染 SQLite 異常抓包紀錄
+    let anomalyTotal = 0;
+    function prependAnomaly(a) {
+      const list = document.getElementById('anomaly-list');
+      const timeStr = new Date(a.timestamp).toLocaleTimeString('zh-TW', { hour12: false });
+      const item = document.createElement('div');
+      item.className = 'px-3 py-1.5 flex justify-between items-center bg-rose-950/20';
+      item.innerHTML = `
+        <div>
+          <span class="text-slate-500 text-[10px] mr-1.5">${timeStr}</span>
+          <span class="px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-400 font-bold text-[10px]">${a.metric_type}: ${a.metric_value}%</span>
+        </div>
+        <div class="text-right">
+          <span class="text-slate-400">元兇:</span>
+          <span class="text-white font-bold">${a.culprit_name}</span>
+          <span class="text-slate-400 text-[10px]">(PID ${a.culprit_pid} | CPU ${a.culprit_cpu}% | ${a.culprit_mem_mb}MB)</span>
+        </div>
+      `;
+      list.prepend(item);
+      anomalyTotal++;
+      document.getElementById('anomaly-count').textContent = `${anomalyTotal} 筆紀錄`;
+    }
+
+    async function saveThresholds() {
+      const cpu = document.getElementById('inp-cpu-th').value;
+      const mem = document.getElementById('inp-mem-th').value;
+      await fetch(`/api/thresholds?cpu=${cpu}&mem=${mem}`, { method: 'POST' });
+      showToast(`已更新異常抓包門檻：CPU ${cpu}% / RAM ${mem}%`);
+    }
+
+    // 6. 建立 WebSocket 連線
+    function connectWS() {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      const ws = new WebSocket(`${proto}://${location.host}/ws`);
+      const dot = document.getElementById('conn-dot');
+
+      ws.onopen = () => { dot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400'; };
+
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'init') {
+          document.getElementById('inp-cpu-th').value = msg.cpu_threshold;
+          document.getElementById('inp-mem-th').value = msg.mem_threshold;
+          if (msg.anomalies) msg.anomalies.reverse().forEach(prependAnomaly);
+        } else if (msg.type === 'telemetry') {
+          const d = msg.data;
+          document.getElementById('cpu-freq-badge').textContent = `${d.cpu.freq_mhz} MHz`;
+          document.getElementById('hdr-cpu').textContent = `${d.cpu.total}%`;
+          document.getElementById('hdr-mem').textContent = `${d.memory.percent}% (${d.memory.used_gb}/${d.memory.total_gb} GB)`;
+          document.getElementById('hdr-net').textContent = `↑ ${d.network.up_kbps} / ↓ ${d.network.down_kbps} KB/s`;
+          document.getElementById('hdr-disk').textContent = `R ${d.disk.read_mbps} / W ${d.disk.write_mbps} MB/s`;
+
+          cpuData.push(d.cpu.total); cpuData.shift();
+          memData.push(d.memory.percent); memData.shift();
+          sysChart.update();
+
+          renderCores(d.cpu.per_core);
+          latestProcesses = d.top_processes;
+          renderProcesses();
+          renderConnections(d.connections);
+
+          if (msg.new_anomaly) {
+            prependAnomaly(msg.new_anomaly);
+            showToast(`⚠️ 偵測到系統負載異常！已將元兇 ${msg.new_anomaly.culprit_name} 記錄至 SQLite`);
+          }
+        }
+      };
+
+      ws.onclose = () => {
+        dot.className = 'w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping';
+        setTimeout(connectWS, 3000);
+      };
+    }
+
+    connectWS();
+  </script>
+</body>
+</html>
