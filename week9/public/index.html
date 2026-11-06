@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cloudflare 邊緣工作台</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen font-sans">
+  <div class="max-w-3xl mx-auto px-4 py-10">
+    <!-- 頂部標題與狀態列 -->
+    <header class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-slate-800">
+      <div>
+        <h1 class="text-2xl font-bold text-orange-400 flex items-center gap-2">
+          ⚡ Cloudflare 邊緣工作台
+        </h1>
+        <p class="text-sm text-slate-400 mt-1">部署於 Cloudflare Global Edge Network 的極速網頁應用</p>
+      </div>
+      <div id="edge-badge" class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-800 border border-slate-700 text-xs text-slate-300">
+        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+        <span id="edge-colo">偵測節點中...</span>
+      </div>
+    </header>
+
+    <!-- Cloudflare 邊緣節點資訊卡 -->
+    <section class="mt-6 bg-slate-800/60 border border-slate-700/80 rounded-xl p-5">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">🌐 訪客邊緣連線狀態</h2>
+        <button onclick="fetchEdgeInfo()" class="text-xs text-orange-400 hover:text-orange-300 transition">重新整理</button>
+      </div>
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+        <div class="bg-slate-900/70 p-3 rounded-lg border border-slate-800">
+          <div class="text-slate-400 text-xs">連線機房 (Colo)</div>
+          <div id="info-colo" class="font-mono font-semibold text-orange-400 mt-1">--</div>
+        </div>
+        <div class="bg-slate-900/70 p-3 rounded-lg border border-slate-800">
+          <div class="text-slate-400 text-xs">訪客地區 (Loc)</div>
+          <div id="info-loc" class="font-mono font-semibold text-slate-200 mt-1">--</div>
+        </div>
+        <div class="bg-slate-900/70 p-3 rounded-lg border border-slate-800">
+          <div class="text-slate-400 text-xs">HTTP 協定</div>
+          <div id="info-http" class="font-mono font-semibold text-emerald-400 mt-1">--</div>
+        </div>
+        <div class="bg-slate-900/70 p-3 rounded-lg border border-slate-800">
+          <div class="text-slate-400 text-xs">TLS 加密版本</div>
+          <div id="info-tls" class="font-mono font-semibold text-sky-400 mt-1">--</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 待辦事項應用區 -->
+    <section class="mt-6 bg-slate-800/60 border border-slate-700/80 rounded-xl p-5">
+      <h2 class="text-lg font-semibold text-white mb-4">📝 個人待辦清單</h2>
+      <form id="todo-form" class="flex gap-2 mb-5">
+        <input
+          id="todo-input"
+          type="text"
+          placeholder="輸入待辦事項後按 Enter..."
+          required
+          class="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-orange-500"
+        />
+        <button
+          type="submit"
+          class="bg-orange-500 hover:bg-orange-600 text-white font-medium px-5 py-2.5 rounded-lg text-sm transition"
+        >
+          新增
+        </button>
+      </form>
+
+      <ul id="todo-list" class="space-y-2"></ul>
+      <div id="empty-state" class="text-center py-8 text-slate-500 text-sm hidden">
+        目前沒有待辦事項，新增一個開始吧！
+      </div>
+    </section>
+  </div>
+
+  <script>
+    // 1. 讀取 Cloudflare 內建 /cdn-cgi/trace 端點資訊
+    async function fetchEdgeInfo() {
+      try {
+        const res = await fetch('/cdn-cgi/trace');
+        if (!res.ok) throw new Error('非 Cloudflare 環境');
+        const text = await res.text();
+        const data = Object.fromEntries(
+          text.trim().split('\n').map(line => line.split('='))
+        );
+        document.getElementById('edge-colo').textContent = `已連線至 ${data.colo || 'Edge'} 節點`;
+        document.getElementById('info-colo').textContent = data.colo || 'N/A';
+        document.getElementById('info-loc').textContent = data.loc || 'N/A';
+        document.getElementById('info-http').textContent = data.http || 'N/A';
+        document.getElementById('info-tls').textContent = data.tls || 'N/A';
+      } catch (err) {
+        document.getElementById('edge-colo').textContent = '本機預覽模式 (部署後顯示節點)';
+        document.getElementById('info-colo').textContent = 'LOCAL';
+        document.getElementById('info-loc').textContent = 'TW';
+        document.getElementById('info-http').textContent = 'http/1.1';
+        document.getElementById('info-tls').textContent = '本地測試';
+      }
+    }
+
+    // 2. 待辦事項邏輯 (使用 localStorage 儲存)
+    let todos = JSON.parse(localStorage.getItem('cf_todos') || '[]');
+
+    function saveAndRender() {
+      localStorage.setItem('cf_todos', JSON.stringify(todos));
+      const list = document.getElementById('todo-list');
+      const empty = document.getElementById('empty-state');
+      list.innerHTML = '';
+
+      if (todos.length === 0) {
+        empty.classList.remove('hidden');
+        return;
+      }
+      empty.classList.add('hidden');
+
+      todos.forEach((todo, index) => {
+        const li = document.createElement('li');
+        li.className = 'flex items-center justify-between bg-slate-900/80 border border-slate-800 px-4 py-3 rounded-lg';
+        li.innerHTML = `
+          <label class="flex items-center gap-3 cursor-pointer flex-1">
+            <input type="checkbox" ${todo.done ? 'checked' : ''} onchange="toggleTodo(${index})" class="w-4 h-4 accent-orange-500 rounded" />
+            <span class="text-sm ${todo.done ? 'line-through text-slate-500' : 'text-slate-200'}">${escapeHtml(todo.text)}</span>
+          </label>
+          <button onclick="deleteTodo(${index})" class="text-slate-500 hover:text-rose-400 text-xs px-2 py-1">刪除</button>
+        `;
+        list.appendChild(li);
+      });
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
+    }
+
+    window.toggleTodo = (index) => {
+      todos[index].done = !todos[index].done;
+      saveAndRender();
+    };
+
+    window.deleteTodo = (index) => {
+      todos.splice(index, 1);
+      saveAndRender();
+    };
+
+    document.getElementById('todo-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const input = document.getElementById('todo-input');
+      if (!input.value.trim()) return;
+      todos.unshift({ text: input.value.trim(), done: false });
+      input.value = '';
+      saveAndRender();
+    });
+
+    fetchEdgeInfo();
+    saveAndRender();
+  </script>
+</body>
+</html>
